@@ -1,0 +1,8 @@
+backup_config.yaml
+backup_history.yaml
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/

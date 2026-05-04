@@ -1,0 +1,90 @@
+# Backup Manager Configuration
+# Copy this file to backup_config.yaml and fill in your real paths.
+
+# Tool paths (relative to this config file's directory, or absolute)
+tools:
+  adb: platform-tools/adb.exe
+  adbsync: path/to/adbsync.exe
+  rclone: rclone/rclone.exe
+  media_device_copier: MediaDeviceCopier.exe
+  freefile_sync: "C:\\Program Files\\FreeFileSync\\FreeFileSync.exe"
+
+jobs:
+  # --- Android phone via ADB ---
+  my_android_phone:
+    name: "My Android Phone"
+    type: adbsync
+    group: device
+    source: "/storage/emulated/0/"
+    destination: "C:\\Backups\\Phone"
+    exclude:
+      - "*cache*"
+      - "*.db*"
+
+  # --- iPhone/iPad via MTP ---
+  my_iphone:
+    name: "My iPhone"
+    type: mtp
+    group: device
+    device_name: "Apple iPhone"
+    source: "Internal Storage\\DCIM"
+    destination: "C:\\Backups\\iPhone Photos"
+    recursive: true
+
+  # --- Camera via FreeFileSync batch ---
+  my_camera:
+    name: "My Camera"
+    type: ffs
+    group: device
+    ffs_batch: "Camera.ffs_batch"
+
+  # --- Rclone sync job ---
+  files_to_nas:
+    name: "Files to NAS"
+    type: rclone
+    group: sync
+    depends_on:
+      - my_android_phone
+      - my_iphone
+    rclone_command: copy
+    source: "C:\\Users\\me\\Files"
+    destination: "\\\\server\\nas\\files"
+    flags:
+      transfers: 8
+      buffer-size: 32M
+
+  # --- Rclone cloud sync ---
+  files_to_google_drive:
+    name: "Files to Google Drive"
+    type: rclone
+    group: sync
+    depends_on:
+      - my_android_phone
+      - my_iphone
+    rclone_command: copy
+    source: "C:\\Users\\me\\Files"
+    destination: "drive:Mirror"
+    flags:
+      transfers: 4
+      drive-chunk-size: 32M
+      checksum: true
+
+  # --- Rclone with config creation (e.g. SFTP) ---
+  remote_videos:
+    name: "Remote Videos to NAS"
+    type: rclone
+    group: sync
+    rclone_command: sync
+    rclone_config_create: "myremote sftp host=myserver.local user=myuser key_file=path/to/key.pem"
+    source: "myremote:/home/user/Videos"
+    destination: "\\\\server\\nas\\media\\videos"
+    flags:
+      transfers: 4
+      update: true
+
+  # --- Custom script fallback ---
+  custom_task:
+    name: "Custom Script"
+    type: script
+    group: sync
+    script_path: "my_custom_script.ps1"
