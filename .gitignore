@@ -15,3 +15,8 @@ rclone/
 FreeFileSync/
 MediaDeviceCopier.exe
 *.ffs_batch
+
+# OS / launcher junk
+.DS_Store
+Thumbs.db
+*.lnk
