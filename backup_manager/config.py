@@ -22,6 +22,13 @@ class Job:
     recursive: bool = False
     # FFS-specific
     ffs_batch: str = ""
+    # Pre-run check: path that must exist before running (e.g. drive letter for camera)
+    test_path: str = ""
+    # Post-step: PowerShell script to run after the job succeeds (e.g. immich upload after camera sync)
+    post_script: str = ""
+    # adbsync-specific: encoding for adb shell output. Use "latin-1" for devices with
+    # non-UTF-8 filenames (e.g. game handhelds) so directory listings don't crash.
+    adb_encoding: str = ""
     # Rclone-specific
     rclone_command: str = "copy"
     rclone_config_create: str = ""
@@ -46,6 +53,12 @@ class Job:
             d["recursive"] = True
         if self.ffs_batch:
             d["ffs_batch"] = self.ffs_batch
+        if self.test_path:
+            d["test_path"] = self.test_path
+        if self.post_script:
+            d["post_script"] = self.post_script
+        if self.adb_encoding:
+            d["adb_encoding"] = self.adb_encoding
         if self.type == "rclone":
             d["rclone_command"] = self.rclone_command
             if self.rclone_config_create:
@@ -106,6 +119,9 @@ class ConfigManager:
             device_name=data.get("device_name", ""),
             recursive=data.get("recursive", False),
             ffs_batch=data.get("ffs_batch", ""),
+            test_path=data.get("test_path", ""),
+            post_script=data.get("post_script", ""),
+            adb_encoding=data.get("adb_encoding", ""),
             rclone_command=data.get("rclone_command", "copy"),
             rclone_config_create=data.get("rclone_config_create", ""),
             flags=data.get("flags", {}),

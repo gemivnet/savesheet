@@ -20,8 +20,9 @@ class JobEditor(tk.Toplevel):
         self.on_save_cb = on_save
 
         self.title(f"Edit: {job.name}")
-        self.geometry("550x600")
-        self.resizable(False, False)
+        self.geometry("550x650")
+        self.resizable(True, True)
+        self.minsize(480, 400)
         self.transient(parent)
         self.grab_set()
 
@@ -35,16 +36,23 @@ class JobEditor(tk.Toplevel):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        canvas = tk.Canvas(self)
+        canvas = tk.Canvas(self, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=canvas.yview)
         scroll_frame = ttk.Frame(canvas)
 
         scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw", tags="content")
         canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure("content", width=e.width))
 
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Mousewheel scrolling
+        def _on_mousewheel(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>") if e.widget is self else None)
 
         pad = {"padx": 10, "pady": 4}
         job = self.job
@@ -64,6 +72,14 @@ class JobEditor(tk.Toplevel):
         group_frame.pack(fill=tk.X, **pad)
         ttk.Radiobutton(group_frame, text="Device", variable=self._group_var, value="device").pack(side=tk.LEFT)
         ttk.Radiobutton(group_frame, text="Sync", variable=self._group_var, value="sync").pack(side=tk.LEFT, padx=10)
+
+        # Test path
+        ttk.Label(scroll_frame, text="Test Path (must exist before running):").pack(anchor=tk.W, **pad)
+        tp_frame = ttk.Frame(scroll_frame)
+        tp_frame.pack(fill=tk.X, **pad)
+        self._test_path_var = tk.StringVar(value=job.test_path)
+        ttk.Entry(tp_frame, textvariable=self._test_path_var, width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(tp_frame, text="Browse...", command=self._browse_test_path).pack(side=tk.RIGHT, padx=(4, 0))
 
         if job.type == "rclone":
             # Rclone command
@@ -121,22 +137,24 @@ class JobEditor(tk.Toplevel):
             ttk.Button(script_frame, text="Browse...", command=self._browse_script).pack(side=tk.RIGHT, padx=(4, 0))
 
         # Dependencies
-        ttk.Label(scroll_frame, text="Depends On (select jobs):").pack(anchor=tk.W, **pad)
-        deps_frame = ttk.Frame(scroll_frame)
-        deps_frame.pack(fill=tk.X, **pad)
+        deps_lf = ttk.LabelFrame(scroll_frame, text="Depends On")
+        deps_lf.pack(fill=tk.X, **pad)
         self._dep_vars: dict[str, tk.BooleanVar] = {}
         for jid, j in self.app.config_mgr.jobs.items():
             if jid == job.id:
                 continue
             var = tk.BooleanVar(value=jid in job.depends_on)
             self._dep_vars[jid] = var
-            ttk.Checkbutton(deps_frame, text=j.name, variable=var).pack(anchor=tk.W)
+            ttk.Checkbutton(deps_lf, text=j.name, variable=var).pack(anchor=tk.W, padx=4)
+        if not self._dep_vars:
+            ttk.Label(deps_lf, text="(no other jobs)").pack(anchor=tk.W, padx=4)
 
         # Buttons
         btn_frame = ttk.Frame(scroll_frame)
         btn_frame.pack(fill=tk.X, padx=10, pady=10)
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(btn_frame, text="Save", command=self._on_save).pack(side=tk.RIGHT, padx=(0, 8))
+        ttk.Button(btn_frame, text="Save & Run", command=self._on_save_and_run).pack(side=tk.RIGHT, padx=(0, 8))
 
     def _browse_dest(self) -> None:
         path = filedialog.askdirectory(title="Select Destination")
@@ -150,6 +168,11 @@ class JobEditor(tk.Toplevel):
         )
         if path:
             self._script_var.set(path)
+
+    def _browse_test_path(self) -> None:
+        path = filedialog.askdirectory(title="Select Test Path")
+        if path:
+            self._test_path_var.set(path)
 
     def _parse_flags(self) -> dict[str, Any]:
         flags: dict[str, Any] = {}
@@ -172,11 +195,11 @@ class JobEditor(tk.Toplevel):
                     flags[key] = value
         return flags
 
-    def _on_save(self) -> None:
+    def _build_job_from_form(self) -> Job | None:
         name = self._name_var.get().strip()
         if not name:
             messagebox.showerror("Error", "Name is required.", parent=self)
-            return
+            return None
 
         depends_on = [jid for jid, var in self._dep_vars.items() if var.get()]
 
@@ -186,6 +209,10 @@ class JobEditor(tk.Toplevel):
             type=self.job.type,
             group=self._group_var.get(),
             depends_on=depends_on,
+            test_path=self._test_path_var.get().strip(),
+            # Preserve fields not exposed in this editor so they aren't dropped on save.
+            post_script=self.job.post_script,
+            adb_encoding=self.job.adb_encoding,
         )
 
         if self.job.type == "rclone":
@@ -200,6 +227,21 @@ class JobEditor(tk.Toplevel):
         elif self.job.type == "script":
             job.script_path = self._script_var.get().strip()
 
+        return job
+
+    def _on_save(self) -> None:
+        job = self._build_job_from_form()
+        if not job:
+            return
         self.app.config_mgr.update_job(job)
         self.on_save_cb()
         self.destroy()
+
+    def _on_save_and_run(self) -> None:
+        job = self._build_job_from_form()
+        if not job:
+            return
+        self.app.config_mgr.update_job(job)
+        self.on_save_cb()
+        self.destroy()
+        self.app.main_frame._run_job(job.id)

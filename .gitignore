@@ -1,8 +1,17 @@
 backup_config.yaml
 backup_history.yaml
+.env
+glacier-backup-*.log
 __pycache__/
 *.pyc
 .venv/
 *.egg-info/
 dist/
 build/
+
+# Bundled tools (vendored so the repo is self-contained on disk; not committed)
+platform-tools/
+rclone/
+FreeFileSync/
+MediaDeviceCopier.exe
+*.ffs_batch

@@ -51,6 +51,15 @@ class JobExecutor:
         start = time.time()
         self.on_output(f"--- Starting: {job.name} ---\n")
         try:
+            # Pre-run check: verify test_path exists
+            if job.test_path:
+                test = resolve_path(job.test_path, self.base_dir)
+                if not test.exists():
+                    self.on_output(f"[ERROR] Device not connected: {job.test_path} not found\n")
+                    self.on_complete(job.id, "failed", 0)
+                    return
+                self.on_output(f"[OK] Found: {job.test_path}\n")
+
             commands = self._build_commands(job)
             if not commands:
                 self.on_output(f"[ERROR] Don't know how to run job type '{job.type}'\n")
@@ -66,6 +75,21 @@ class JobExecutor:
                 exit_code = self._run_command(cmd)
                 if exit_code != 0:
                     self.on_output(f"\n[FAILED] Exit code: {exit_code}\n")
+                    self.on_complete(job.id, "failed", int(time.time() - start))
+                    return
+
+            # Post-step: run after the main job succeeds (e.g. immich upload after camera sync)
+            if job.post_script:
+                if self._cancel_flag.is_set():
+                    self.on_output("\n[CANCELLED]\n")
+                    self.on_complete(job.id, "failed", int(time.time() - start))
+                    return
+                post = self._resolve(job.post_script)
+                post_cmd = f'powershell -ExecutionPolicy Bypass -File "{post}"'
+                self.on_output(f"\n--- Post-step ---\n> {post_cmd}\n")
+                exit_code = self._run_command(post_cmd)
+                if exit_code != 0:
+                    self.on_output(f"\n[FAILED] Post-step exit code: {exit_code}\n")
                     self.on_complete(job.id, "failed", int(time.time() - start))
                     return
 
@@ -122,6 +146,8 @@ class JobExecutor:
         adbsync = self._resolve(self.tools.adbsync)
         adb = self._resolve(self.tools.adb)
         parts = [f'"{adbsync}" --adb-bin "{adb}"']
+        if job.adb_encoding:
+            parts.append(f'--adb-encoding "{job.adb_encoding}"')
         for exc in job.exclude:
             parts.append(f'--exclude "{exc}"')
         parts.append(f'pull "{job.source}" "{job.destination}"')
@@ -144,8 +170,10 @@ class JobExecutor:
             commands.append(f'"{rclone}" config create {job.rclone_config_create}')
 
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        source = job.source
-        dest = job.destination
+        # Strip trailing backslashes: a quoted Windows path ending in "\" (e.g. "G:\Files\")
+        # makes the closing quote escape, which corrupts command-line argument parsing.
+        source = job.source.rstrip("\\") or job.source
+        dest = job.destination.rstrip("\\") or job.destination
 
         parts = [f'"{rclone}" {job.rclone_command} "{source}" "{dest}"']
         parts.append("--progress")

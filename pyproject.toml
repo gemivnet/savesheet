@@ -3,7 +3,7 @@ name = "savesheet"
 version = "0.1.0"
 description = "GUI tool for managing device and cloud backup jobs"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6.0"]
+dependencies = ["pyyaml>=6.0", "BetterADBSync>=1.4.0"]
 
 [project.scripts]
 backup-manager = "backup_manager.__main__:main"
