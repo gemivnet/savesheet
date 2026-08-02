@@ -195,4 +195,7 @@ class JobExecutor:
 
     def _build_script(self, job: Job) -> list[str]:
         script = self._resolve(job.script_path)
-        return [f'powershell -ExecutionPolicy Bypass -File "{script}"']
+        cmd = f'powershell -ExecutionPolicy Bypass -File "{script}"'
+        if job.script_args:
+            cmd += f" {job.script_args}"
+        return [cmd]

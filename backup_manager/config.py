@@ -35,6 +35,8 @@ class Job:
     flags: dict[str, Any] = field(default_factory=dict)
     # Script-specific
     script_path: str = ""
+    # Extra arguments appended to the script command line (e.g. "-Bucket backup-2026-07-12")
+    script_args: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a dict suitable for YAML output."""
@@ -67,6 +69,8 @@ class Job:
                 d["flags"] = self.flags
         if self.script_path:
             d["script_path"] = self.script_path
+        if self.script_args:
+            d["script_args"] = self.script_args
         return d
 
 
@@ -126,6 +130,7 @@ class ConfigManager:
             rclone_config_create=data.get("rclone_config_create", ""),
             flags=data.get("flags", {}),
             script_path=data.get("script_path", ""),
+            script_args=data.get("script_args", ""),
         )
 
     def save(self) -> None:

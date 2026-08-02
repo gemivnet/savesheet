@@ -136,6 +136,10 @@ class JobEditor(tk.Toplevel):
             ttk.Entry(script_frame, textvariable=self._script_var, width=40).pack(side=tk.LEFT, fill=tk.X, expand=True)
             ttk.Button(script_frame, text="Browse...", command=self._browse_script).pack(side=tk.RIGHT, padx=(4, 0))
 
+            ttk.Label(scroll_frame, text="Script Arguments (optional):").pack(anchor=tk.W, **pad)
+            self._script_args_var = tk.StringVar(value=job.script_args)
+            ttk.Entry(scroll_frame, textvariable=self._script_args_var, width=50).pack(fill=tk.X, **pad)
+
         # Dependencies
         deps_lf = ttk.LabelFrame(scroll_frame, text="Depends On")
         deps_lf.pack(fill=tk.X, **pad)
@@ -226,6 +230,7 @@ class JobEditor(tk.Toplevel):
                 job.exclude = [l.strip() for l in raw_exc.splitlines() if l.strip()]
         elif self.job.type == "script":
             job.script_path = self._script_var.get().strip()
+            job.script_args = self._script_args_var.get().strip()
 
         return job
 
