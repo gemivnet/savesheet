@@ -21,18 +21,19 @@ param(
     [int]$MaxTarSizeGB        = 150,        # top-level folders bigger than this are split one level (size only)
     [string[]]$ExpandOneLevel = @(),        # (optional) force-split these folders regardless of size
     [string[]]$Exclude        = @(),        # top-level folder names to skip entirely
+    [string]$Bucket           = "",         # bucket override; empty = backup-<today>. Pass a previous run's bucket to resume it.
     [switch]$WhatIf                          # DRY RUN - plan only, no tars/uploads/side effects
 )
 
 $ErrorActionPreference = "Stop"
 $here    = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $rclone  = Join-Path $here "rclone\rclone.exe"
-$bucket  = "backup-" + (Get-Date -Format "yyyy-MM-dd")
+$bucket  = if ($Bucket) { $Bucket } else { "backup-" + (Get-Date -Format "yyyy-MM-dd") }
 $remote  = "glacier:$bucket"
 $logFile = Join-Path $here ("glacier-backup-{0}.log" -f (Get-Date -Format "yyyy-MM-dd"))
 # rclone flags: verbose + a one-line stats update every 20s (newline-terminated so it
 # shows in savesheet's live log panel). Deep Archive storage class + big multipart chunks.
-$upFlags = @("--s3-storage-class","DEEP_ARCHIVE","--s3-chunk-size","256M","-v","--stats","20s","--stats-one-line")
+$upFlags = @("--s3-storage-class","DEEP_ARCHIVE","--s3-chunk-size","128M","--s3-upload-concurrency","16","-v","--stats","20s","--stats-one-line")
 
 # --- counters -----------------------------------------------------------------
 $script:uploaded   = 0
