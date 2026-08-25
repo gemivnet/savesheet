@@ -153,6 +153,15 @@ foreach ($item in Get-ChildItem -LiteralPath $SourceRoot -Force | Sort-Object Na
             foreach ($sub in Get-ChildItem -LiteralPath $item.FullName -Directory -Force | Sort-Object Name) {
                 $work += @{ Src = $sub.FullName; Name = "$($item.Name)/$($sub.Name).tar"; IsFile = $false }
             }
+            # -Directory above skips loose files sitting directly in the split folder. The
+            # unsplit branch tars the whole folder and catches them, so without this they are
+            # dropped from the archive while the run still reports "Archive complete".
+            # They keep their bare name; subfolders get a .tar suffix, so the two cannot collide.
+            $loose = @(Get-ChildItem -LiteralPath $item.FullName -File -Force | Sort-Object Name)
+            foreach ($f in $loose) {
+                $work += @{ Src = $f.FullName; Name = "$($item.Name)/$($f.Name)"; IsFile = $true }
+            }
+            if ($loose.Count) { Log ("SPLIT   {0} + {1} loose file(s) at its root" -f $item.Name, $loose.Count) }
         } else {
             $work += @{ Src = $item.FullName; Name = "$($item.Name).tar"; IsFile = $false }
         }

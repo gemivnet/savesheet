@@ -41,7 +41,9 @@ def relative_time(dt: datetime | str | None) -> str:
     if days < 30:
         return f"{days}d ago"
     months = days // 30
-    if months < 12:
+    # Gate on days, not months: 360-364 days gives months == 12, which fell through to
+    # years == 360 // 365 == 0 and reported "0y ago".
+    if days < 365:
         return f"{months}mo ago"
     years = days // 365
     return f"{years}y ago"

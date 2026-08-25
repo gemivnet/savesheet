@@ -1,10 +1,12 @@
 backup_config.yaml
+# ConfigManager writes dated backups beside it; same contents, same reason to exclude.
+backup_config.yaml.bak-*
 backup_history.yaml
 .env
 glacier-backup-*.log
 __pycache__/
 *.pyc
-.venv/
+.venv*/
 *.egg-info/
 dist/
 build/
@@ -20,3 +22,6 @@ MediaDeviceCopier.exe
 .DS_Store
 Thumbs.db
 *.lnk
+
+# Local agent settings (carries usernames and NAS paths)
+.claude/
