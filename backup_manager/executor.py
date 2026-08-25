@@ -177,7 +177,15 @@ class JobExecutor:
 
         parts = [f'"{rclone}" {job.rclone_command} "{source}" "{dest}"']
         parts.append("--progress")
+        # --suffix-keep-extension puts the timestamp before the extension
+        # (noco.20260105-162122.db) instead of after it (noco.db.20260105-162122).
+        # Without it every superseded version loses its file type: nothing will open
+        # them, and since G:\Files\Server Backup is itself an rclone source they get
+        # re-copied out to the NAS, D:\Mirror, Google Drive and Glacier. That is where
+        # the current 6,365 files / ~15 GB of unopenable shadow copies came from.
+        # Note: this does not retro-fix the existing ones, which still need a sweep.
         parts.append(f'--suffix ".{timestamp}"')
+        parts.append("--suffix-keep-extension")
         for exc in job.exclude:
             parts.append(f'--exclude "{exc}"')
         for key, value in job.flags.items():
