@@ -4,6 +4,7 @@ backup_config.yaml.bak-*
 backup_history.yaml
 .env
 glacier-backup-*.log
+logs/
 __pycache__/
 *.pyc
 .venv*/
@@ -16,7 +17,12 @@ platform-tools/
 rclone/
 FreeFileSync/
 MediaDeviceCopier.exe
+rcu-*/
 *.ffs_batch
+
+# SSH key for the reMarkable's sftp remote
+remarkable_key
+remarkable_key.pub
 
 # OS / launcher junk
 .DS_Store

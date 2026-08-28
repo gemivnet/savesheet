@@ -13,28 +13,53 @@ def resolve_path(path: str, base_dir: Path) -> Path:
     return base_dir / p
 
 
-def relative_time(dt: datetime | str | None) -> str:
-    """Return a human-readable relative time string like '2 days ago'."""
+# A backup taken within this window is still the current state of the device, so
+# the UI calls it "Just now" and keeps its status colour. Closing and reopening the app
+# does not make a 13-minute-old backup stale, which is what the old session-scoped
+# colouring implied.
+FRESH_WINDOW_SECONDS = 2 * 60 * 60
+
+
+def _coerce(dt: datetime | str | None) -> datetime | None:
+    """Normalise a history timestamp to an aware datetime, or None if unusable."""
     if dt is None:
-        return "Never"
+        return None
     if isinstance(dt, str):
         try:
             dt = datetime.fromisoformat(dt)
         except ValueError:
-            return "Unknown"
-    now = datetime.now(timezone.utc)
+            return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    delta = now - dt
-    seconds = int(delta.total_seconds())
-    if seconds < 0:
+    return dt
+
+
+def age_seconds(dt: datetime | str | None) -> int | None:
+    """Seconds since dt, or None if there is no usable timestamp."""
+    parsed = _coerce(dt)
+    if parsed is None:
+        return None
+    return int((datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def is_fresh(dt: datetime | str | None, window_seconds: int = FRESH_WINDOW_SECONDS) -> bool:
+    """True if dt is recent enough to still count as the current state."""
+    seconds = age_seconds(dt)
+    return seconds is not None and 0 <= seconds < window_seconds
+
+
+def relative_time(dt: datetime | str | None) -> str:
+    """Return a human-readable relative time string like '2 days ago'."""
+    if dt is None:
+        return "Never"
+    if _coerce(dt) is None:
+        return "Unknown"
+    seconds = age_seconds(dt)
+    assert seconds is not None
+    # Covers clock skew (negative) as well as genuinely recent runs.
+    if seconds < FRESH_WINDOW_SECONDS:
         return "Just now"
-    if seconds < 60:
-        return "Just now"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes}m ago"
-    hours = minutes // 60
+    hours = seconds // 3600
     if hours < 24:
         return f"{hours}h ago"
     days = hours // 24

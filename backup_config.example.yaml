@@ -38,6 +38,28 @@ jobs:
     group: device
     ffs_batch: "Camera.ffs_batch"
 
+  # --- reMarkable tablet over SSH/SFTP ---
+  # RCU's whole-device snapshot is GUI-only, so the notebook data is pulled with
+  # rclone instead. 10.11.99.1 is the tablet's address over USB. ssh-ed25519 is
+  # not optional: the tablet's dropbear advertises an RSA host key it does not
+  # actually have, and the handshake dies before rclone can ask for anything.
+  my_remarkable:
+    name: "My reMarkable"
+    type: rclone
+    group: device
+    # --obscure so rclone never writes the password to rclone.conf in the clear.
+    # Obscuring is reversible, so treat this line as plaintext: if this checkout
+    # lives inside a tree another job backs up, the password goes with it.
+    rclone_config_create: "remarkable sftp host=10.11.99.1 user=root pass=<root password> shell_type=unix md5sum_command=md5sum sha1sum_command=sha1sum --obscure"
+    rclone_command: copy
+    source: "remarkable:/home/root"
+    destination: "C:\\Backups\\reMarkable"
+    exclude:
+      - "/.cache/**"
+    flags:
+      transfers: 4
+      sftp-host-key-algorithms: ssh-ed25519
+
   # --- Rclone sync job ---
   files_to_nas:
     name: "Files to NAS"

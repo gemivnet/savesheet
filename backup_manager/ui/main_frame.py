@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import os
+import re
 import tkinter as tk
 from tkinter import ttk, messagebox
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..app import App
+
+
+# CSI sequences and two-character escapes. adb, rclone and RCU all colour their output
+# and move the cursor around; none of that means anything to a Text widget.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+
+# Long runs stream tens of thousands of lines. Past a few thousand the widget starts to
+# crawl, and nobody scrolls back that far anyway - the log file has the full record.
+MAX_LOG_LINES = 5000
 
 
 class MainFrame(ttk.Frame):
@@ -28,6 +39,7 @@ class MainFrame(ttk.Frame):
 
         ttk.Button(toolbar, text="+ Add Device", command=self._on_add_device).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Button(toolbar, text="Debug Tools", command=self._on_debug_tools).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Button(toolbar, text="Open Logs", command=self._on_open_logs).pack(side=tk.LEFT, padx=(0, 4))
 
         self._stop_btn = ttk.Button(toolbar, text="Stop", command=self._on_stop, state=tk.DISABLED)
         self._stop_btn.pack(side=tk.RIGHT)
@@ -92,16 +104,17 @@ class MainFrame(ttk.Frame):
 
             for job in jobs:
                 history = self.app.history_mgr.get(job.id)
-                from ..utils import relative_time
+                from ..utils import is_fresh, relative_time
                 last = relative_time(history.last_success)
                 status = "Idle"
                 tag = "idle"
-                if job.id in self._session_completed:
-                    h = self.app.history_mgr.get(job.id)
-                    if h.last_status == "success":
+                # A run from this session, or a recent enough one from any session:
+                # restarting the app does not make a 13-minute-old backup stale.
+                if job.id in self._session_completed or is_fresh(history.last_attempt):
+                    if history.last_status == "success":
                         status = "Done"
                         tag = "success"
-                    elif h.last_status == "failed":
+                    elif history.last_status == "failed":
                         status = "Failed"
                         tag = "failed"
 
@@ -156,8 +169,23 @@ class MainFrame(ttk.Frame):
         self.append_log("Ready.\n")
 
     def append_log(self, text: str) -> None:
+        text = _ANSI.sub("", text).replace("\x07", "")
+        if not text:
+            return
+        # CRLF is a line ending, not an erase. Normalise it first so the split below
+        # only ever sees a bare CR, which really does mean "redraw this line".
+        text = text.replace("\r\n", "\n")
         self.log_text.configure(state=tk.NORMAL)
-        self.log_text.insert(tk.END, text)
+        # A carriage return means "redraw this line", so honour it instead of appending:
+        # otherwise a progress line stacks up hundreds of half-finished copies of itself.
+        for i, chunk in enumerate(text.split("\r")):
+            if i:
+                self.log_text.delete("end-1c linestart", "end-1c")
+            if chunk:
+                self.log_text.insert(tk.END, chunk)
+        lines = int(self.log_text.index("end-1c").split(".")[0])
+        if lines > MAX_LOG_LINES:
+            self.log_text.delete("1.0", f"{lines - MAX_LOG_LINES}.0")
         self.log_text.see(tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
@@ -216,6 +244,16 @@ class MainFrame(ttk.Frame):
                 self.tree.item(item, values=("Done", last), tags=("success",))
             else:
                 self.tree.item(item, values=("Failed", last), tags=("failed",))
+
+    def _on_open_logs(self) -> None:
+        log_dir = self.app.log_dir
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(log_dir))  # Windows-only; so is the rest of this app
+        except AttributeError:
+            messagebox.showinfo("Logs", str(log_dir))
+        except OSError as e:
+            messagebox.showerror("Logs", f"Could not open {log_dir}:\n{e}")
 
     def _on_stop(self) -> None:
         self.app.executor.cancel()

@@ -17,6 +17,8 @@ class App:
         self.history_mgr = HistoryManager(self.base_dir / "backup_history.yaml")
         self.history_mgr.load()
 
+        self.log_dir = self.base_dir / "logs"
+
         self.root = tk.Tk()
         self.root.title("Backup Manager")
         self.root.geometry("750x650")
@@ -27,6 +29,7 @@ class App:
             base_dir=self.base_dir,
             on_output=self._on_output,
             on_complete=self._on_complete,
+            log_dir=self.log_dir,
         )
 
         from .ui.main_frame import MainFrame
