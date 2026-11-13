@@ -11,7 +11,7 @@ import yaml
 class Job:
     id: str
     name: str
-    type: str  # adbsync | mtp | rclone | ffs | script
+    type: str  # adbsync | mtp | ios_backup | rclone | ffs | script
     group: str = "device"  # device | sync
     source: str = ""
     destination: str = ""
@@ -20,6 +20,13 @@ class Job:
     # MTP-specific
     device_name: str = ""
     recursive: bool = False
+    # ios_backup-specific: "iPhone" or "iPad". Only consulted the first time the job runs,
+    # to stop it binding itself to the wrong kind of device; after that the UDID decides.
+    device_class: str = ""
+    # mtp-specific: id of the ios_backup job for the same physical device. Windows names
+    # every iPhone "Apple iPhone", so before copying photos the executor checks the device
+    # on the cable against the UDID that job is bound to.
+    same_device_as: str = ""
     # FFS-specific
     ffs_batch: str = ""
     # Pre-run check: path that must exist before running (e.g. drive letter for camera)
@@ -33,6 +40,11 @@ class Job:
     rclone_command: str = "copy"
     rclone_config_create: str = ""
     flags: dict[str, Any] = field(default_factory=dict)
+    # rclone: several folders in one job. Each part is {source, destination, exclude?}; the
+    # job runs one rclone command per part with the job's command and flags, carries on
+    # past a failed part, and fails at the end if any part failed. Used instead of
+    # source/destination, e.g. nas_data (George 2026-11-12: one job, not one per folder).
+    parts: list[dict[str, Any]] = field(default_factory=list)
     # Script-specific
     script_path: str = ""
     # Extra arguments appended to the script command line (e.g. "-Bucket backup-2026-07-12")
@@ -53,6 +65,10 @@ class Job:
             d["device_name"] = self.device_name
         if self.recursive:
             d["recursive"] = True
+        if self.device_class:
+            d["device_class"] = self.device_class
+        if self.same_device_as:
+            d["same_device_as"] = self.same_device_as
         if self.ffs_batch:
             d["ffs_batch"] = self.ffs_batch
         if self.test_path:
@@ -67,6 +83,8 @@ class Job:
                 d["rclone_config_create"] = self.rclone_config_create
             if self.flags:
                 d["flags"] = self.flags
+            if self.parts:
+                d["parts"] = self.parts
         if self.script_path:
             d["script_path"] = self.script_path
         if self.script_args:
@@ -122,6 +140,8 @@ class ConfigManager:
             depends_on=data.get("depends_on", []),
             device_name=data.get("device_name", ""),
             recursive=data.get("recursive", False),
+            device_class=data.get("device_class", ""),
+            same_device_as=data.get("same_device_as", ""),
             ffs_batch=data.get("ffs_batch", ""),
             test_path=data.get("test_path", ""),
             post_script=data.get("post_script", ""),
@@ -129,6 +149,7 @@ class ConfigManager:
             rclone_command=data.get("rclone_command", "copy"),
             rclone_config_create=data.get("rclone_config_create", ""),
             flags=data.get("flags", {}),
+            parts=data.get("parts") or [],
             script_path=data.get("script_path", ""),
             script_args=data.get("script_args", ""),
         )

@@ -1,8 +1,66 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def console_python() -> str:
+    """The interpreter this app is running under, in its console form.
+
+    run.pyw starts the app with pythonw.exe, which has no stdout to stream;
+    python.exe beside it is the same environment with one.
+    """
+    exe = Path(sys.executable)
+    if exe.name.lower() == "pythonw.exe":
+        console = exe.with_name("python.exe")
+        if console.exists():
+            exe = console
+    return str(exe)
+
+
+def _on_network_drive(path: Path) -> bool:
+    """True if Windows would page this file in over the network (a mapped drive or UNC path)."""
+    if os.name != "nt":
+        return False
+    anchor = path.anchor
+    if anchor.startswith("\\\\"):
+        return True
+    import ctypes
+    DRIVE_REMOTE = 4
+    return ctypes.windll.kernel32.GetDriveTypeW(anchor) == DRIVE_REMOTE
+
+
+def local_exe(path: Path) -> Path:
+    """A copy of a network-hosted executable on the PC's own disk, refreshed when it changes.
+
+    Windows does not load an .exe into memory when it starts: it maps the file and reads each
+    page of code the first time that code runs. For rclone at N:\\workspace\\savesheet that means
+    reading from the server's SMB share hours into a run, and if the share stalls the read
+    fails and the process dies at once with STATUS_IN_PAGE_ERROR (0xc0000006), which rclone's
+    Go runtime reports as "unexpected fault address ... fatal error: fault". That killed
+    Files to Google Drive on 2026-11-13 after 2h23m, while the server was swapping. A copy
+    on C: cannot go away mid-run. Falls back to the original if the copy fails.
+    """
+    try:
+        if not _on_network_drive(path) or not path.is_file():
+            return path
+        local_dir = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "savesheet" / "bin"
+        local = local_dir / path.name
+        src = path.stat()
+        if local.is_file():
+            dst = local.stat()
+            if dst.st_size == src.st_size and int(dst.st_mtime) == int(src.st_mtime):
+                return local
+        local_dir.mkdir(parents=True, exist_ok=True)
+        tmp = local.with_name(local.name + ".tmp")
+        shutil.copy2(path, tmp)
+        os.replace(tmp, local)
+        return local
+    except OSError:
+        return path
 
 
 def resolve_path(path: str, base_dir: Path) -> Path:
@@ -13,11 +71,11 @@ def resolve_path(path: str, base_dir: Path) -> Path:
     return base_dir / p
 
 
-# A backup taken within this window is still the current state of the device, so
-# the UI calls it "Just now" and keeps its status colour. Closing and reopening the app
-# does not make a 13-minute-old backup stale, which is what the old session-scoped
-# colouring implied.
-FRESH_WINDOW_SECONDS = 2 * 60 * 60
+# Freshness is a rolling 24-hour window: a job stays green for a full day after its last
+# run, whatever the calendar date (George, 2026-11-12). An earlier version keyed on the
+# local calendar date, but that flipped a backup to non-green at midnight - a run at 23:00
+# looked stale by 00:30, half an hour later. Closing and reopening the app does not make a
+# recent backup stale either; the colour comes from the timestamp, not the session.
 
 
 def _coerce(dt: datetime | str | None) -> datetime | None:
@@ -42,23 +100,24 @@ def age_seconds(dt: datetime | str | None) -> int | None:
     return int((datetime.now(timezone.utc) - parsed).total_seconds())
 
 
-def is_fresh(dt: datetime | str | None, window_seconds: int = FRESH_WINDOW_SECONDS) -> bool:
-    """True if dt is recent enough to still count as the current state."""
+def is_fresh(dt: datetime | str | None) -> bool:
+    """True if dt is within the last 24 hours - a rolling window, not the calendar date.
+    A future timestamp (clock skew) counts as fresh: it has effectively just happened."""
     seconds = age_seconds(dt)
-    return seconds is not None and 0 <= seconds < window_seconds
+    if seconds is None:
+        return False
+    return seconds < 24 * 3600
 
 
 def relative_time(dt: datetime | str | None) -> str:
     """Return a human-readable relative time string like '2 days ago'."""
     if dt is None:
         return "Never"
-    if _coerce(dt) is None:
-        return "Unknown"
     seconds = age_seconds(dt)
-    assert seconds is not None
-    # Covers clock skew (negative) as well as genuinely recent runs.
-    if seconds < FRESH_WINDOW_SECONDS:
-        return "Just now"
+    if seconds is None:
+        return "Unknown"
+    if seconds < 3600:
+        return "Just now"  # under an hour, or a future timestamp (clock skew)
     hours = seconds // 3600
     if hours < 24:
         return f"{hours}h ago"

@@ -27,6 +27,16 @@ class MainFrame(ttk.Frame):
 
         self._job_items: dict[str, str] = {}  # job_id -> treeview item id
         self._session_completed: set[str] = set()  # jobs completed this session
+        # Run queue (George, 2026-11-13: "one useful tool would be able to add a job to a
+        # queue"). Jobs run one at a time, in order, each starting when the one before ends.
+        self._queue: list[str] = []
+        # Per queued job: the unhealthy dependencies the user said to queue it anyway with. Any
+        # OTHER dependency problem found when its turn comes (typically one queued ahead of it
+        # that then failed) means it is skipped, not run.
+        self._queue_accepted: dict[str, set[str]] = {}
+        self._skipped: set[str] = set()  # skipped from the queue this session, until run again
+        self._running_id: str | None = None
+        self._next_pending = False  # a retry of _start_next_queued is scheduled
 
         self._build_toolbar()
         self._build_job_list()
@@ -43,6 +53,11 @@ class MainFrame(ttk.Frame):
 
         self._stop_btn = ttk.Button(toolbar, text="Stop", command=self._on_stop, state=tk.DISABLED)
         self._stop_btn.pack(side=tk.RIGHT)
+        self._clear_queue_btn = ttk.Button(toolbar, text="Clear Queue", command=self._on_clear_queue,
+                                           state=tk.DISABLED)
+        self._clear_queue_btn.pack(side=tk.RIGHT, padx=(0, 4))
+        self._queue_label = ttk.Label(toolbar, text="")
+        self._queue_label.pack(side=tk.RIGHT, padx=(0, 8))
 
     # --- Job List ---
     def _build_job_list(self) -> None:
@@ -71,10 +86,15 @@ class MainFrame(ttk.Frame):
         self.tree.tag_configure("running", foreground="#0066cc")
         self.tree.tag_configure("success", foreground="#228B22")
         self.tree.tag_configure("failed", foreground="#cc0000")
+        self.tree.tag_configure("changed", foreground="#cc7a00")
+        self.tree.tag_configure("queued", foreground="#7a3db8")
 
         # Context menu
         self._context_menu = tk.Menu(self.tree, tearoff=0)
         self._context_menu.add_command(label="Run", command=self._on_run_selected)
+        self._context_menu.add_command(label="Add to Queue", command=self._on_queue_selected)
+        self._context_menu.add_command(label="Remove from Queue", command=self._on_unqueue_selected)
+        self._context_menu.add_separator()
         self._context_menu.add_command(label="Edit", command=self._on_edit_selected)
         self._context_menu.add_separator()
         self._context_menu.add_command(label="Delete", command=self._on_delete_selected)
@@ -89,8 +109,39 @@ class MainFrame(ttk.Frame):
         self.refresh_job_list()
 
     def refresh_job_list(self) -> None:
+        # Rebuilding the tree must not lose what the user was looking at.
+        selected = self._get_selected_job_id()
+        was_open = {self.tree.item(g, "text"): bool(self.tree.item(g, "open"))
+                    for g in self.tree.get_children()}
         self.tree.delete(*self.tree.get_children())
         self._job_items.clear()
+        self._build_job_rows()
+        for g in self.tree.get_children():
+            if self.tree.item(g, "text") in was_open:
+                self.tree.item(g, open=was_open[self.tree.item(g, "text")])
+        self._show_live_status()
+        if selected and selected in self._job_items:
+            self.tree.selection_set(self._job_items[selected])
+
+    def _show_live_status(self) -> None:
+        """Overlay what only this session knows (running, queued, skipped) on the rows."""
+        for job_id in self._skipped:
+            item = self._job_items.get(job_id)
+            if item:
+                self.tree.item(item, values=("Skipped", self.tree.item(item, "values")[1]), tags=("failed",))
+        for pos, job_id in enumerate(self._queue, 1):
+            item = self._job_items.get(job_id)
+            if item:
+                self.tree.item(item, values=(f"Queued #{pos}", self.tree.item(item, "values")[1]),
+                               tags=("queued",))
+        item = self._job_items.get(self._running_id) if self._running_id else None
+        if item:
+            self.tree.item(item, values=("Running...", self.tree.item(item, "values")[1]), tags=("running",))
+        n = len(self._queue)
+        self._queue_label.configure(text=f"Queue: {n}" if n else "")
+        self._clear_queue_btn.configure(state=tk.NORMAL if n else tk.DISABLED)
+
+    def _build_job_rows(self) -> None:
 
         groups = self.app.config_mgr.get_jobs_by_group()
         group_labels = {"device": "DEVICES", "sync": "SYNC"}
@@ -110,7 +161,13 @@ class MainFrame(ttk.Frame):
                 tag = "idle"
                 # A run from this session, or a recent enough one from any session:
                 # restarting the app does not make a 13-minute-old backup stale.
-                if job.id in self._session_completed or is_fresh(history.last_attempt):
+                if self.app.job_changed(job):
+                    # Edited since it last succeeded (settings, code or scripts): it counts
+                    # as never run until it succeeds in its new form (George, 2026-11-12).
+                    status = "Re-run"
+                    tag = "changed"
+                    last = "Never (changed)"
+                elif job.id in self._session_completed or is_fresh(history.last_attempt):
                     if history.last_status == "success":
                         status = "Done"
                         tag = "success"
@@ -128,14 +185,19 @@ class MainFrame(ttk.Frame):
         for group_key, jobs in groups.items():
             if group_key in ("device", "sync"):
                 continue
-            group_node = self.tree.insert("", tk.END, text=group_key.upper(), tags=("group",), open=True)
+            # Archived jobs start collapsed: they are kept for the record, not run (George 2026-11-12).
+            group_node = self.tree.insert("", tk.END, text=group_key.upper(), tags=("group",),
+                                          open=group_key != "archived")
             for job in jobs:
                 history = self.app.history_mgr.get(job.id)
                 from ..utils import relative_time
                 last = relative_time(history.last_success)
+                status, tag = "Idle", "idle"
+                if self.app.job_changed(job):
+                    status, tag, last = "Re-run", "changed", "Never (changed)"
                 item_id = self.tree.insert(
                     group_node, tk.END, text=f"  {job.name}",
-                    values=("Idle", last), tags=("idle",)
+                    values=(status, last), tags=(tag,)
                 )
                 self._job_items[job.id] = item_id
 
@@ -195,6 +257,37 @@ class MainFrame(ttk.Frame):
         self.log_text.configure(state=tk.DISABLED)
 
     # --- Actions ---
+    def _dependency_problems(self, job, assume_ok: set[str] = frozenset()) -> list[tuple[str, str]]:
+        """(dep_id, reason) for each dependency that isn't satisfied.
+
+        One is satisfied by a success this session, or by a last run that succeeded within 24
+        hours of a job that hasn't been edited since - restarting the app doesn't make an
+        hour-old phone backup stale (George, 2026-11-12). `assume_ok` are jobs that will run
+        first (the running one and those queued ahead), so they count as satisfied for now.
+        """
+        from ..utils import is_fresh, relative_time
+        problems = []
+        for dep_id in job.depends_on or []:
+            dep = self.app.config_mgr.jobs.get(dep_id)
+            if not dep or dep_id in self._session_completed or dep_id in assume_ok:
+                continue
+            h = self.app.history_mgr.get(dep_id)
+            if self.app.job_changed(dep):
+                problems.append((dep_id, f"{dep.name}: changed since it last ran"))
+            elif h.last_status != "success":
+                problems.append((dep_id, f"{dep.name}: last run {h.last_status}" if h.last_attempt
+                                 else f"{dep.name}: never run"))
+            elif not is_fresh(h.last_success):
+                problems.append((dep_id, f"{dep.name}: last succeeded {relative_time(h.last_success)}"))
+        return problems
+
+    def _confirm_dependencies(self, job, problems: list[tuple[str, str]], verb: str) -> bool:
+        if not problems:
+            return True
+        msg = (f"{job.name} depends on jobs that haven't succeeded in the last 24 hours:\n\n"
+               + "\n".join(f"  - {p}" for _, p in problems) + f"\n\n{verb} anyway?")
+        return messagebox.askyesno("Dependency Warning", msg)
+
     def _on_run_selected(self) -> None:
         job_id = self._get_selected_job_id()
         if not job_id:
@@ -203,17 +296,89 @@ class MainFrame(ttk.Frame):
         job = self.app.config_mgr.jobs.get(job_id)
         if not job:
             return
-
-        # Check dependencies
-        if job.depends_on:
-            missing = [d for d in job.depends_on if d not in self._session_completed]
-            if missing:
-                names = [self.app.config_mgr.jobs[d].name for d in missing if d in self.app.config_mgr.jobs]
-                msg = f"{job.name} depends on jobs that haven't run this session:\n\n" + "\n".join(f"  - {n}" for n in names) + "\n\nRun anyway?"
-                if not messagebox.askyesno("Dependency Warning", msg):
-                    return
-
+        # Something already running (or waiting): "Run" joins the queue instead of refusing.
+        if self._running_id or self.app.executor.is_running or self._queue:
+            self._enqueue(job_id)
+            return
+        if not self._confirm_dependencies(job, self._dependency_problems(job), "Run"):
+            return
         self._run_job(job_id)
+
+    # --- Queue ---
+    def _on_queue_selected(self) -> None:
+        job_id = self._get_selected_job_id()
+        if job_id:
+            self._enqueue(job_id)
+
+    def _enqueue(self, job_id: str) -> None:
+        job = self.app.config_mgr.jobs.get(job_id)
+        if not job:
+            return
+        if job_id == self._running_id or job_id in self._queue:
+            messagebox.showinfo("Queue", f"{job.name} is already {'running' if job_id == self._running_id else 'queued'}.")
+            return
+        ahead = set(self._queue) | ({self._running_id} if self._running_id else set())
+        problems = self._dependency_problems(job, assume_ok=ahead)
+        if not self._confirm_dependencies(job, problems, "Queue"):
+            return
+        self._queue.append(job_id)
+        # Only the problems the user just said yes to. A dependency queued ahead isn't in here:
+        # if it then fails, this job is skipped when its turn comes.
+        self._queue_accepted[job_id] = {d for d, _ in problems}
+        self._skipped.discard(job_id)
+        self.append_log(f"[QUEUE] {job.name} queued (#{len(self._queue)})\n")
+        self.refresh_job_list()
+        self._start_next_queued()  # no-op while a job is running
+
+    def _on_unqueue_selected(self) -> None:
+        job_id = self._get_selected_job_id()
+        if job_id in self._queue:
+            self._queue.remove(job_id)
+            self._queue_accepted.pop(job_id, None)
+            job = self.app.config_mgr.jobs.get(job_id)
+            self.append_log(f"[QUEUE] {job.name if job else job_id} removed from the queue\n")
+            self.refresh_job_list()
+
+    def _on_clear_queue(self) -> None:
+        if not self._queue:
+            return
+        n = len(self._queue)
+        self._queue.clear()
+        self._queue_accepted.clear()
+        self.append_log(f"[QUEUE] cleared ({n} job{'s' if n != 1 else ''} not run)\n")
+        self.refresh_job_list()
+
+    def _start_next_queued(self) -> None:
+        if self._running_id:
+            return  # a job is running; its on_job_complete starts the next one
+        # on_complete fires from inside the executor's thread, so it may not have exited yet.
+        # Only one retry may be pending, or two could each pop a job and one would be lost.
+        if self.app.executor.is_running:
+            if not self._next_pending:
+                self._next_pending = True
+                self.after(250, self._retry_start_next)
+            return
+        while self._queue:
+            job_id = self._queue.pop(0)
+            accepted = self._queue_accepted.pop(job_id, set())
+            job = self.app.config_mgr.jobs.get(job_id)
+            if not job:
+                continue  # deleted while it waited
+            # A dependency that was queued ahead and then failed is a reason to skip, not to
+            # ask: the queue is for running unattended. Problems accepted when it was queued
+            # still run, as the user chose.
+            new_problems = [p for d, p in self._dependency_problems(job) if d not in accepted]
+            if new_problems:
+                self._skipped.add(job_id)
+                self.append_log(f"[QUEUE] Skipped {job.name}: " + "; ".join(new_problems) + "\n")
+                continue
+            self._run_job(job_id)
+            break
+        self.refresh_job_list()
+
+    def _retry_start_next(self) -> None:
+        self._next_pending = False
+        self._start_next_queued()
 
     def _run_job(self, job_id: str) -> None:
         job = self.app.config_mgr.jobs.get(job_id)
@@ -223,7 +388,8 @@ class MainFrame(ttk.Frame):
             messagebox.showwarning("Busy", "Another job is already running.")
             return
 
-        # Update UI
+        self._running_id = job_id
+        self._skipped.discard(job_id)
         item = self._job_items.get(job_id)
         if item:
             self.tree.item(item, values=("Running...", self.tree.item(item, "values")[1]), tags=("running",))
@@ -232,7 +398,13 @@ class MainFrame(ttk.Frame):
         self.app.run_job(job)
 
     def on_job_complete(self, job_id: str, status: str, duration: int) -> None:
-        self._session_completed.add(job_id)
+        # Only a success satisfies depends_on. Counting every finished job let a mirror run
+        # without warning after the phone job it depends on had failed.
+        if status == "success":
+            self._session_completed.add(job_id)
+        else:
+            self._session_completed.discard(job_id)
+        self._running_id = None
         self._stop_btn.configure(state=tk.DISABLED)
 
         item = self._job_items.get(job_id)
@@ -245,6 +417,9 @@ class MainFrame(ttk.Frame):
             else:
                 self.tree.item(item, values=("Failed", last), tags=("failed",))
 
+        if self._queue:
+            self._start_next_queued()
+
     def _on_open_logs(self) -> None:
         log_dir = self.app.log_dir
         try:
@@ -256,6 +431,12 @@ class MainFrame(ttk.Frame):
             messagebox.showerror("Logs", f"Could not open {log_dir}:\n{e}")
 
     def _on_stop(self) -> None:
+        # Ask before cancelling, so the next queued job can't start in between.
+        if self._queue:
+            n = len(self._queue)
+            if messagebox.askyesno("Stop", f"Also clear the {n} queued job{'s' if n != 1 else ''}?\n\n"
+                                           "No stops only the running job; the queue then carries on."):
+                self._on_clear_queue()
         self.app.executor.cancel()
 
     def _on_add_device(self) -> None:
@@ -283,7 +464,13 @@ class MainFrame(ttk.Frame):
         job = self.app.config_mgr.jobs.get(job_id)
         if not job:
             return
+        if job_id == self._running_id:
+            messagebox.showwarning("Delete Job", f"'{job.name}' is running. Stop it first.")
+            return
         if messagebox.askyesno("Delete Job", f"Delete '{job.name}'?"):
+            if job_id in self._queue:
+                self._queue.remove(job_id)
+                self._queue_accepted.pop(job_id, None)
             self.app.config_mgr.delete_job(job_id)
             self.refresh_job_list()
 
@@ -292,5 +479,14 @@ class MainFrame(ttk.Frame):
         if item:
             self.tree.selection_set(item)
             # Only show context menu for job items, not group headers
-            if self._get_selected_job_id():
+            job_id = self._get_selected_job_id()
+            if job_id:
+                busy = job_id == self._running_id
+                queued = job_id in self._queue
+                self._context_menu.entryconfigure(
+                    "Run", state=tk.DISABLED if busy or queued else tk.NORMAL)
+                self._context_menu.entryconfigure(
+                    "Add to Queue", state=tk.DISABLED if busy or queued else tk.NORMAL)
+                self._context_menu.entryconfigure(
+                    "Remove from Queue", state=tk.NORMAL if queued else tk.DISABLED)
                 self._context_menu.post(event.x_root, event.y_root)

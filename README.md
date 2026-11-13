@@ -1,6 +1,6 @@
 # SaveSheet
 
-A Windows GUI for managing device and cloud backups. Wraps common tools — adb, rclone, FreeFileSync, MediaDeviceCopier — behind a visual interface with per-job controls, connection testing, and backup history.
+A Windows GUI for managing device and cloud backups. Wraps common tools — adb, rclone, FreeFileSync, MediaDeviceCopier, pymobiledevice3 — behind a visual interface with per-job controls, connection testing, and backup history.
 
 Built for people who back up phones, tablets, cameras, NAS, cloud storage, and external drives on a regular cadence and want something lighter than a full backup suite.
 
@@ -12,7 +12,8 @@ Built for people who back up phones, tablets, cameras, NAS, cloud storage, and e
 
 - **Per-job control** — each backup is run individually; no forced sequential mode
 - **Device configurator** — wizard that tests connections (`adb devices`, `MediaDeviceCopier list-devices`), lets you pick folders, and saves to config
-- **Debug tools** — test ADB, list MTP devices, check rclone remotes, ping your NAS
+- **Full iPhone / iPad backups** — encrypted, incremental, restorable device backups, each job bound to one device by UDID and each backup checked against its password
+- **Debug tools** — test ADB, list MTP and iOS devices, check rclone remotes, ping your NAS
 - **Backup history** — tracks last success time, status, and duration for every job
 - **Dependency warnings** — advisory alerts when running a sync before its source devices have been backed up (never blocking)
 - **Live log output** — streams command stdout/stderr in real time, and writes every run to its own file under `logs/`
@@ -23,7 +24,8 @@ Built for people who back up phones, tablets, cameras, NAS, cloud storage, and e
 | Type | Tool | Use Case |
 |------|------|----------|
 | `adbsync` | [adbsync](https://github.com/jb2170/adbsync) + adb | Android phones and tablets |
-| `mtp` | [MediaDeviceCopier](https://github.com/nicoriff/MediaDeviceCopier) | iPhones, iPads, and other MTP devices |
+| `mtp` | [MediaDeviceCopier](https://github.com/nicoriff/MediaDeviceCopier) | Photos from iPhones, iPads, and other MTP devices |
+| `ios_backup` | [pymobiledevice3](https://github.com/doronz88/pymobiledevice3) | Full, encrypted, restorable iPhone and iPad backups |
 | `ffs` | [FreeFileSync](https://freefilesync.org/) | Cameras, SD cards (via batch files) |
 | `rclone` | [rclone](https://rclone.org/) | Cloud storage, NAS, external drives |
 | `script` | PowerShell | Custom scripts as a fallback |
@@ -119,6 +121,36 @@ my_ipad:
   recursive: true
 ```
 
+On an Apple device MTP reaches the camera roll and nothing else. For everything else, use `ios_backup`.
+
+**ios_backup** — the device's own backup, the kind Finder and iTunes take: messages, app data, settings, home screen layout and, because it is encrypted, Health, saved passwords, Wi-Fi networks and call history. It is what you restore onto a replacement device.
+```yaml
+my_iphone_full:
+  name: "My iPhone (Full)"
+  type: ios_backup
+  group: device
+  destination: "C:\\Backups\\iOS Full\\My iPhone"
+  device_class: iPhone           # or iPad; only used to pick the device on the first run
+```
+
+Put the backup password in a `.env` file next to `backup_config.yaml` (gitignored) as `IOS_BACKUP_PASSWORD=<a long random string>`. It is read from there, or from the environment, and never passed on a command line — every command the app runs is echoed to the log panel and written to `logs/`. **Keep it.** No backup taken with it can be opened without it.
+
+What a run does:
+
+1. **Finds its device.** The first run binds the job to the single matching device on USB and records its UDID in `savesheet-device.json` in the destination. After that the job refuses any other device, and a device already bound to a neighbouring folder is never offered to a new job. Windows calls every iPhone "Apple iPhone", so the UDID is the only thing that tells two apart; keep the destinations under one common parent so the jobs can see each other's bindings. To move a job to a replacement device, delete `savesheet-device.json`.
+2. **Waits for trust.** A device new to this PC shows *Trust This Computer?* — unlock it, tap Trust, enter the passcode. The job waits three minutes.
+3. **Turns on encryption** if it is off, using the password from `.env`. The device asks for its passcode.
+4. **Backs up** into `<destination>\<UDID>\`. Incremental after the first run, which copies roughly the device's used storage and can take hours. iOS asks for the passcode at the start of every backup.
+5. **Proves the backup opens**, by unwrapping its keybag and manifest key with the password from `.env`. A device given a backup password years ago in iTunes keeps using that one and will produce backups nobody can open; this step catches it and says how to clear the old password.
+
+If a device already has a backup password from before, add it to `.env` as `IOS_BACKUP_OLD_PASSWORD=...` and run the job once: it changes that device over to `IOS_BACKUP_PASSWORD` and moves the backup made with the old password aside as `<UDID>.old-password-<date>`. If the old password is unknown, *Settings > General > Transfer or Reset > Reset > Reset All Settings* on the device clears it. A job whose device is in this state fails immediately on later runs instead of taking another backup it cannot open.
+
+Requires Apple's *Apple Mobile Device Service*, which MTP does not need. A backup run installs it with `winget install Apple.AppleMobileDeviceSupport` if it is missing.
+
+An `mtp` job can set `same_device_as: my_iphone_full` to check the bound UDID before copying photos; the check is skipped until the full-backup job has run once.
+
+To restore, use Finder, iTunes or the Apple Devices app, or `pymobiledevice3 backup2 restore "<destination>"`.
+
 **rclone** — syncs to/from cloud, NAS, or external drives:
 ```yaml
 files_to_nas:
@@ -196,7 +228,7 @@ my_remarkable_docs:
   script_args: -Format rmdoc -OutDir "C:\\Backups\\reMarkable\\Documents"
 ```
 
-`-Format rmdoc` is the useful default: a restorable archive per document that keeps the ink. PDF output (`pdf-rm`, `pdf-v`, `pdf-b`) is also supported, but RCU renders page-by-page and `pdf-v` has been seen to truncate long notebooks, so the script verifies exported PDFs against the page count in the tablet's `.content` sidecar and flags any that come out short. Run one job per format, each with its own `-OutDir`, since the incremental manifest lives inside it.
+`-Format rmdoc` is the format to back up: a lossless, restorable archive per document. Its `.rm` ink files are byte-for-byte the tablet's own, checked for all 238 written pages on 2026-11-12, and the reMarkable app can open it or export a PDF from it on demand. PDF output (`pdf-rm`, `pdf-v`, `pdf-b`) is still supported but **not used, deliberately**. The reMarkable's pages scroll: one page grows downward as you write (on Shelby's tablet, 132 of 232 written pages ran past the first screen, one by about 20 screens). RCU's `pdf-v` renders each page at a single screen size, so everything below the first screenful is cut off, and a long note looks like a one-page PDF. The cut-off `PDF` export job was removed on 2026-11-12, along with its folder. If you add a PDF job anyway, give it its own `-OutDir` (the incremental manifest lives inside it), and compare page heights with each page's `verticalScroll` in the `.content` sidecar, not just page counts.
 
 Two prerequisites, both easy to miss:
 
@@ -207,9 +239,45 @@ RCU's CLI cannot report which collection a document belongs to, so the folder tr
 
 RCU's whole-device Snapshot has no command-line flag, so it stays a manual GUI step.
 
+#### Signal Desktop
+
+Also a `script` job. Signal offers no export and its database is SQLCipher-encrypted, so the conversations exist only inside `%APPDATA%\Signal`. [`sigtop_export.ps1`](sigtop_export.ps1) drives [sigtop](https://github.com/tbvdm/sigtop) to read that database (read-only — Signal Desktop can stay open) and write a transcript per conversation plus the attachments as real files:
+
+```yaml
+signal_desktop:
+  name: Signal Desktop (sigtop)
+  type: script
+  group: device
+  script_path: sigtop_export.ps1
+  script_args: -OutDir "C:\\Backups\\Signal"
+```
+
+Output is `messages\<conversation>.txt` and `attachments\<conversation>\`. `-MessageFormat json` writes `messages-json\` instead — reactions, quotes, edits and raw timestamps, which the text transcript drops. Both can be exported at once with `-MessageFormat text,json`.
+
+There is no path back into Signal. This is an archive, not a restorable backup.
+
+Two sigtop behaviours shape the whole script:
+
+- **It never overwrites an attachment.** A second export of the same file lands next to the first as `name-2.jpg`. So the job runs `export-attachments -i`, which keeps a `.incremental` file at the top of the attachments directory recording what it has already written. Delete that file and the next run writes a second copy of the entire archive. The script refuses to run against an attachments directory that has files but no `.incremental` — pass `-SeedIncremental` to move the untracked copy aside, re-export clean, and verify by SHA-256 that every file in the old copy is accounted for before you delete it. `-i` also keys on content rather than path, so a photo forwarded into three conversations is stored once, under whichever conversation sigtop reaches first; the transcripts identify attachments by the sender's filename and byte size, never by the exported name, so nothing refers to the copies that are not written.
+- **It refuses to overwrite a transcript**, failing the whole `export-messages` command with `open <file>: The file exists`. Transcripts are therefore exported to a staging directory and moved over the destination, which also means a failed export leaves the previous ones intact. Transcripts for conversations that no longer exist in Signal are left in place rather than swept away — the export is additive, like `rcu_export.ps1`, so disappearing messages and deleted-for-everyone media stay in the archive after Signal itself has forgotten them.
+
+`export-attachments -m` stamps each file's modification time from the message it came from rather than from the time of the export. Without it every attachment looks new to the rclone jobs on every run, and ~670 MB gets re-copied to the NAS, Drive and Glacier each cycle.
+
+sigtop exits 1 when it skipped any attachment that was never downloaded to this machine (`skipping attachment without path`, `skipping pending attachment`) even though the export succeeded — normal for an account that is read mostly on a phone. The script judges on what sigtop reported rather than on the exit code, and collapses the skips to a count so they cannot bury a real error.
+
+### Archiving a job
+
+Set `group: archived` on a job for a device that is no longer in use. It moves out of DEVICES into its own ARCHIVED section, keeps its history and its record of where the backup lives, and can still be run. Remove it from other jobs' `depends_on` so they stop warning about it. The backed-up files are not touched.
+
 ### Dependencies
 
-The `depends_on` field lists job IDs. When you run a job with unmet dependencies, the GUI shows a warning listing which ones haven't been run this session. You can always choose to proceed anyway — dependencies are advisory, never blocking.
+The `depends_on` field lists job IDs. A dependency counts as met if it succeeded this session, or if its last run succeeded within the past 24 hours and it hasn't been changed since. When you run a job with unmet dependencies, the GUI lists them and asks whether to proceed. You can always say yes: dependencies are advisory, never blocking.
+
+### Queue
+
+Right-click a job → **Add to Queue** to run it after whatever is running. **Run** on a job while another is running does the same. Queued jobs run one at a time, in order, and show **Queued #n** in the Status column. The toolbar shows the count and has **Clear Queue**, and right-click → **Remove from Queue** takes one job out.
+
+The dependency check happens when a job is queued. Jobs running or queued ahead of it count as met, because they will run first. If one of them then fails, the job that depended on it is **skipped** when its turn comes, with no prompt (the queue is meant to run unattended), and the rest of the queue carries on. A dependency problem you said yes to when queuing still runs. **Stop** asks whether to clear the queue as well; if you say no, the next job starts. The queue isn't saved, so it's empty when the app restarts.
 
 ### Logs
 

@@ -21,7 +21,8 @@ jobs:
       - "*cache*"
       - "*.db*"
 
-  # --- iPhone/iPad via MTP ---
+  # --- iPhone/iPad photos via MTP ---
+  # The camera roll as plain files - all that Windows exposes over MTP.
   my_iphone:
     name: "My iPhone"
     type: mtp
@@ -30,6 +31,21 @@ jobs:
     source: "Internal Storage\\DCIM"
     destination: "C:\\Backups\\iPhone Photos"
     recursive: true
+    # Optional. Windows names every iPhone "Apple iPhone"; with more than one in the
+    # house, this checks the UDID bound to the full-backup job before copying.
+    same_device_as: my_iphone_full
+
+  # --- iPhone/iPad full backup (encrypted, restorable) ---
+  # The device's own backup: messages, app data, settings, Health, keychain. Needs
+  # IOS_BACKUP_PASSWORD in a .env file beside this config, and Apple's "Apple Mobile
+  # Device Service" (installed with winget on first use if missing). The first run binds
+  # the job to the one device plugged in; later runs are incremental. See the README.
+  my_iphone_full:
+    name: "My iPhone (Full)"
+    type: ios_backup
+    group: device
+    destination: "C:\\Backups\\iOS Full\\My iPhone"
+    device_class: iPhone        # or iPad; only used to pick the device on the first run
 
   # --- Camera via FreeFileSync batch ---
   my_camera:
@@ -59,6 +75,18 @@ jobs:
     flags:
       transfers: 4
       sftp-host-key-algorithms: ssh-ed25519
+
+  # --- Signal Desktop, via sigtop (a script job) ---
+  # Signal has no export of its own and its database is SQLCipher-encrypted, so
+  # sigtop_export.ps1 wraps sigtop to pull out a transcript per conversation plus
+  # the attachments. Incremental and additive; see the README for why both matter,
+  # and why deleting attachments\.incremental doubles the archive on the next run.
+  signal_desktop:
+    name: "Signal Desktop (sigtop)"
+    type: script
+    group: device
+    script_path: "sigtop_export.ps1"
+    script_args: -OutDir "C:\\Backups\\Signal"
 
   # --- Rclone sync job ---
   files_to_nas:

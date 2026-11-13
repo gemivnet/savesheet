@@ -7,7 +7,7 @@ from tkinter import ttk, filedialog, messagebox
 from typing import TYPE_CHECKING, Callable
 
 from ..config import Job
-from ..utils import resolve_path, sanitize_job_id
+from ..utils import console_python, resolve_path, sanitize_job_id
 
 if TYPE_CHECKING:
     from ..app import App
@@ -15,13 +15,18 @@ if TYPE_CHECKING:
 
 DEVICE_TYPES = {
     "adbsync": "Android (ADB)",
-    "mtp": "iPhone / iPad (MTP)",
+    "mtp": "iPhone / iPad photos (MTP)",
+    "ios_backup": "iPhone / iPad full backup (encrypted)",
     "ffs": "Camera / SD Card (FreeFileSync)",
 }
+
+# Shown in the "same device as" picker for mtp jobs when nothing is chosen.
+NO_TWIN = "(none - do not check)"
 
 DEFAULT_SOURCES = {
     "adbsync": "/storage/emulated/0/",
     "mtp": "Internal Storage",
+    "ios_backup": "",
     "ffs": "",
 }
 
@@ -106,6 +111,32 @@ class DeviceWizard(tk.Toplevel):
         ttk.Label(self._mtp_frame, text="MTP Device Name (from test above):").pack(anchor=tk.W)
         self._mtp_device_var = tk.StringVar(value="Apple iPhone")
         ttk.Entry(self._mtp_frame, textvariable=self._mtp_device_var, width=50).pack(fill=tk.X)
+        # Windows names every iPhone "Apple iPhone", so the name above cannot tell two
+        # of them apart. Pairing the photo job with the device's full-backup job lets
+        # the executor check the UDID before it copies anything.
+        ttk.Label(self._mtp_frame, text="Same device as (full-backup job, checked before copying):").pack(anchor=tk.W, pady=(6, 0))
+        self._twin_var = tk.StringVar(value=NO_TWIN)
+        self._twin_ids: dict[str, str] = {NO_TWIN: ""}
+        for jid, j in self.app.config_mgr.jobs.items():
+            if j.type == "ios_backup":
+                self._twin_ids[j.name] = jid
+        ttk.Combobox(self._mtp_frame, textvariable=self._twin_var, values=list(self._twin_ids),
+                     state="readonly", width=47).pack(fill=tk.X)
+
+        # --- Device class (only for ios_backup) ---
+        self._ios_frame = ttk.Frame(c)
+        ttk.Label(self._ios_frame, text="Device kind (only used the first time, to bind the job to the right device):").pack(anchor=tk.W)
+        self._device_class_var = tk.StringVar(value="iPhone")
+        ios_row = ttk.Frame(self._ios_frame)
+        ios_row.pack(fill=tk.X)
+        for kind in ("iPhone", "iPad"):
+            ttk.Radiobutton(ios_row, text=kind, variable=self._device_class_var, value=kind).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(
+            self._ios_frame, wraplength=480, justify=tk.LEFT,
+            text="The first run binds this job to the one device plugged in, turns on backup "
+                 "encryption with IOS_BACKUP_PASSWORD from .env, and takes a full backup. "
+                 "Later runs are incremental and refuse any other device.",
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         # --- FFS batch file (only for ffs) ---
         self._ffs_frame = ttk.Frame(c)
@@ -165,6 +196,7 @@ class DeviceWizard(tk.Toplevel):
         dtype = self._type_var.get()
         # Hide all type-specific frames
         self._mtp_frame.pack_forget()
+        self._ios_frame.pack_forget()
         self._ffs_frame.pack_forget()
         self._test_path_frame.pack_forget()
         self._source_frame.pack_forget()
@@ -176,6 +208,8 @@ class DeviceWizard(tk.Toplevel):
             self._source_frame.pack(fill=tk.X, padx=10, pady=4)
             self._exclude_frame.pack(fill=tk.X, padx=10, pady=4)
             self._source_var.set(DEFAULT_SOURCES["mtp"])
+        elif dtype == "ios_backup":
+            self._ios_frame.pack(fill=tk.X, padx=10, pady=4)
         elif dtype == "ffs":
             self._ffs_frame.pack(fill=tk.X, padx=10, pady=4)
             self._test_path_frame.pack(fill=tk.X, padx=10, pady=4)
@@ -222,6 +256,13 @@ class DeviceWizard(tk.Toplevel):
                 elif dtype == "mtp":
                     mdc = str(resolve_path(self.app.config_mgr.tools.media_device_copier, self.app.base_dir))
                     result = subprocess.run([mdc, "list-devices"], capture_output=True, text=True, timeout=10)
+                    output = result.stdout + result.stderr
+                elif dtype == "ios_backup":
+                    result = subprocess.run(
+                        [console_python(), "-m", "backup_manager.ios_backup", "list"],
+                        capture_output=True, text=True, timeout=10,
+                        cwd=str(self.app.base_dir), encoding="utf-8", errors="replace",
+                    )
                     output = result.stdout + result.stderr
                 elif dtype == "ffs":
                     # Check test_path if provided
@@ -281,6 +322,11 @@ class DeviceWizard(tk.Toplevel):
         self._test_path_var.set(job.test_path)
         if job.type == "mtp":
             self._mtp_device_var.set(job.device_name)
+            for twin_name, twin_id in self._twin_ids.items():
+                if twin_id and twin_id == job.same_device_as:
+                    self._twin_var.set(twin_name)
+        if job.type == "ios_backup" and job.device_class:
+            self._device_class_var.set(job.device_class)
         if job.type == "ffs":
             self._ffs_var.set(job.ffs_batch)
         if job.exclude:
@@ -318,13 +364,16 @@ class DeviceWizard(tk.Toplevel):
             id=job_id,
             name=name,
             type=dtype,
-            group="device",
+            # Keep the group on edit: an archived device stays archived.
+            group=self.edit_job.group if self.edit_job else "device",
             source=self._source_var.get().strip(),
             destination=dest,
             exclude=excludes,
             depends_on=depends_on,
             device_name=self._mtp_device_var.get().strip() if dtype == "mtp" else "",
             recursive=True if dtype == "mtp" else False,
+            device_class=self._device_class_var.get() if dtype == "ios_backup" else "",
+            same_device_as=self._twin_ids.get(self._twin_var.get(), "") if dtype == "mtp" else "",
             ffs_batch=self._ffs_var.get().strip() if dtype == "ffs" else "",
             test_path=self._test_path_var.get().strip(),
             # Preserve fields not exposed in this wizard so editing a device
