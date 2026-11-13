@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from typing import TYPE_CHECKING, Any, Callable
@@ -27,7 +29,7 @@ class JobEditor(tk.Toplevel):
         self.grab_set()
 
         # For device types, delegate to DeviceWizard
-        if job.type in ("adbsync", "mtp", "ffs"):
+        if job.type in ("adbsync", "mtp", "ios_backup", "ffs"):
             self.destroy()
             from .device_wizard import DeviceWizard
             DeviceWizard(parent, app, on_save=on_save, edit_job=job)
@@ -207,16 +209,16 @@ class JobEditor(tk.Toplevel):
 
         depends_on = [jid for jid, var in self._dep_vars.items() if var.get()]
 
-        job = Job(
-            id=self.job.id,
+        # Start from the job as it is and change only what this form shows. Building a fresh
+        # Job here dropped every field the form doesn't expose: saving an adbsync, mtp,
+        # ios_backup or ffs job wiped its source, destination, excludes, device name or
+        # batch file, and an rclone job lost its parts (2026-11-12).
+        job = dataclasses.replace(
+            self.job,
             name=name,
-            type=self.job.type,
             group=self._group_var.get(),
             depends_on=depends_on,
             test_path=self._test_path_var.get().strip(),
-            # Preserve fields not exposed in this editor so they aren't dropped on save.
-            post_script=self.job.post_script,
-            adb_encoding=self.job.adb_encoding,
         )
 
         if self.job.type == "rclone":
@@ -226,8 +228,7 @@ class JobEditor(tk.Toplevel):
             job.rclone_config_create = self._rclone_config_var.get().strip()
             job.flags = self._parse_flags()
             raw_exc = self._exclude_text.get("1.0", tk.END).strip()
-            if raw_exc:
-                job.exclude = [l.strip() for l in raw_exc.splitlines() if l.strip()]
+            job.exclude = [l.strip() for l in raw_exc.splitlines() if l.strip()]
         elif self.job.type == "script":
             job.script_path = self._script_var.get().strip()
             job.script_args = self._script_args_var.get().strip()

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install pyyaml ruff
+      - name: Compile
+        run: python -m compileall -q backup_manager tools try_backup_password.py run.pyw
+      - name: Lint
+        run: ruff check --select E9,F backup_manager tools tests try_backup_password.py
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -v

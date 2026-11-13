@@ -2,8 +2,10 @@ backup_config.yaml
 # ConfigManager writes dated backups beside it; same contents, same reason to exclude.
 backup_config.yaml.bak-*
 backup_history.yaml
+backup_fingerprints.yaml
 .env
 glacier-backup-*.log
+logs/
 __pycache__/
 *.pyc
 .venv*/
@@ -16,7 +18,13 @@ platform-tools/
 rclone/
 FreeFileSync/
 MediaDeviceCopier.exe
+sigtop.exe
+rcu-*/
 *.ffs_batch
+
+# SSH key for the reMarkable's sftp remote
+remarkable_key
+remarkable_key.pub
 
 # OS / launcher junk
 .DS_Store

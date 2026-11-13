@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from ..utils import resolve_path
+from ..utils import console_python, resolve_path
 
 if TYPE_CHECKING:
     from ..app import App
@@ -18,7 +18,7 @@ class DebugDialog(tk.Toplevel):
         super().__init__(parent)
         self.app = app
         self.title("Debug Tools")
-        self.geometry("550x450")
+        self.geometry("700x450")
         self.transient(parent)
         self.grab_set()
 
@@ -31,6 +31,7 @@ class DebugDialog(tk.Toplevel):
         buttons = [
             ("Test ADB", self._test_adb),
             ("List MTP Devices", self._test_mtp),
+            ("List iOS Devices", self._test_ios),
             ("Rclone Remotes", self._test_rclone),
             ("Ping NAS", self._test_nas),
             ("Open Rclone Config", self._open_rclone_config),
@@ -82,6 +83,11 @@ class DebugDialog(tk.Toplevel):
     def _test_mtp(self) -> None:
         mdc = str(resolve_path(self.app.config_mgr.tools.media_device_copier, self.app.base_dir))
         self._run_async([mdc, "list-devices"], "MTP Devices")
+
+    def _test_ios(self) -> None:
+        # The view the full-backup jobs get: name, model and UDID, rather than MTP's
+        # "Apple iPhone" for all of them.
+        self._run_async([console_python(), "-m", "backup_manager.ios_backup", "list"], "iOS Devices (USB)")
 
     def _test_rclone(self) -> None:
         rclone = str(resolve_path(self.app.config_mgr.tools.rclone, self.app.base_dir))

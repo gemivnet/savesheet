@@ -28,6 +28,22 @@ param(
 $ErrorActionPreference = "Stop"
 $here    = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
 $rclone  = Join-Path $here "rclone\rclone.exe"
+# What the archive leaves out (credentials, Claude transcripts): the same list as the Drive job.
+. (Join-Path $here "tools\glacier\tar_excludes.ps1")
+# Run rclone from a copy on C:. Windows reads an .exe's code from its file as it runs, so
+# rclone on the N: share dies with "unexpected fault address" (0xc0000006) if the share
+# stalls mid-run - it killed Files to Google Drive on 2026-11-13. See local_exe in utils.py.
+try {
+    $localBin = Join-Path $env:LOCALAPPDATA "savesheet\bin"
+    $localRclone = Join-Path $localBin "rclone-glacier.exe"
+    $src = Get-Item $rclone
+    $dst = Get-Item $localRclone -ErrorAction SilentlyContinue
+    if (-not $dst -or $dst.Length -ne $src.Length -or $dst.LastWriteTimeUtc -ne $src.LastWriteTimeUtc) {
+        New-Item -ItemType Directory -Force -Path $localBin | Out-Null
+        Copy-Item $rclone $localRclone -Force
+    }
+    $rclone = $localRclone
+} catch { }
 $bucket  = if ($Bucket) { $Bucket } else { "backup-" + (Get-Date -Format "yyyy-MM-dd") }
 $remote  = "glacier:$bucket"
 $logFile = Join-Path $here ("glacier-backup-{0}.log" -f (Get-Date -Format "yyyy-MM-dd"))
@@ -80,8 +96,11 @@ function Backup-Item {
         return
     }
 
+    $rel = $SourceDir.Substring($SourceRoot.TrimEnd('\').Length).TrimStart('\', '/').Replace('\', '/')
+
     # ---- loose file: upload as-is (no tar) ----
     if ($IsFile) {
+        if (Test-ExcludedFile $rel) { Log "EXCLUDE $RemoteName (credentials / transcripts, as on Drive)"; return }
         Log "PLAN    file $SourceDir  ->  $RemoteName"
         if ($WhatIf) { return }
         Log "UPLOAD  $RemoteName (raw file) -> Deep Archive"
@@ -92,7 +111,8 @@ function Backup-Item {
         return
     }
 
-    Log "PLAN    $SourceDir  ->  $RemoteName"
+    $tarExcludes = @(Get-TarExcludes $rel)
+    Log "PLAN    $SourceDir  ->  $RemoteName  ($($tarExcludes.Count) exclude pattern(s))"
     if ($WhatIf) { return }
 
     $tarPath = Join-Path $Staging (($RemoteName -replace '[\\/]', '__'))
@@ -102,7 +122,8 @@ function Backup-Item {
 
     Log "TAR     $RemoteName  <-  $SourceDir"
     $t0 = Get-Date
-    & tar -cf "$tarPath" -C "$parent" "$leaf"
+    $exArgs = @(); foreach ($e in $tarExcludes) { $exArgs += @("--exclude", $e) }
+    & tar -cf "$tarPath" @exArgs -C "$parent" "$leaf"
     if ($LASTEXITCODE -ne 0) { throw "tar exited $LASTEXITCODE" }
     $tarGB = [math]::Round((Get-Item $tarPath).Length / 1GB, 3)
     Log ("TARDONE $RemoteName  {0} GB in {1}" -f $tarGB, ((Get-Date) - $t0).ToString('hh\:mm\:ss'))
@@ -121,6 +142,25 @@ function Backup-Item {
 # ==============================================================================
 Log ("===== Glacier Deep Archive {0} -> {1} =====" -f ($(if ($WhatIf) { "DRY RUN" } else { "BACKUP" }), $remote))
 Log "Source: $SourceRoot   Staging: $Staging   Split over: $MaxTarSizeGB GB   Log: $logFile"
+
+# ---- credentials ----
+# The glacier: remote's AWS key comes from .env beside this script, not from the PC's
+# rclone.conf (2026-11-12: the old key there was revoked when the account moved to a
+# write-only IAM user, glacier-writer - see tools\glacier\). rclone lets environment
+# variables named RCLONE_CONFIG_GLACIER_<OPTION> override the remote's config file values.
+# Only those variables are read, and their values are never logged.
+$envFile = Join-Path $here ".env"
+if (Test-Path -LiteralPath $envFile) {
+    foreach ($line in Get-Content -LiteralPath $envFile) {
+        if ($line -match '^\s*(RCLONE_CONFIG_GLACIER_[A-Z_]+)\s*=\s*(.*?)\s*$') {
+            Set-Item -Path ("Env:" + $Matches[1]) -Value $Matches[2]
+        }
+    }
+}
+if (-not $env:RCLONE_CONFIG_GLACIER_ACCESS_KEY_ID) {
+    Log "RCLONE_CONFIG_GLACIER_ACCESS_KEY_ID is not in $envFile; the key in rclone.conf was revoked on 2026-11-12" "ERROR"
+    exit 1
+}
 
 # ---- preflight ----
 if (-not (Test-Path $rclone))      { Log "rclone not found at $rclone" "ERROR"; exit 1 }
@@ -193,3 +233,5 @@ if ($script:failures.Count) {
     exit 1
 }
 Log ("All done. {0}" -f $(if ($WhatIf) { "(DRY RUN - no changes made)" } else { "Archive complete." }))
+# The glacier-writer key can't seal (that takes an admin login), so say what's left to do.
+if (-not $WhatIf) { Log "Next: seal $bucket so nothing can overwrite it - tools/glacier/glacier_seal.sh $bucket on home-server (after aws login)" }
