@@ -6,7 +6,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, TextIO
+from typing import Callable, TextIO
 
 from .config import Job, ToolPaths
 from .utils import console_python, local_exe, resolve_path

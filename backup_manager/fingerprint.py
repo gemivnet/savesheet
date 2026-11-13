@@ -23,7 +23,6 @@ import hashlib
 import json
 import threading
 from pathlib import Path, PureWindowsPath
-from typing import Any
 
 import yaml
 

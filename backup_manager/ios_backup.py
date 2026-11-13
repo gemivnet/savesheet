@@ -463,7 +463,7 @@ async def cmd_backup(args: argparse.Namespace) -> int:
         raise JobError(
             f"No backup password: {PASSWORD_VAR} is not set in the environment"
             + (f" or in {env_file}" if env_file else "") + ".\n"
-            f"  Full backups here are encrypted, and this job will not take one it cannot later prove it can open."
+            "  Full backups here are encrypted, and this job will not take one it cannot later prove it can open."
         )
 
     binding = read_binding(dest)
