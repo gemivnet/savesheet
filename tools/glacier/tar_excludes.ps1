@@ -29,6 +29,7 @@ $script:GlacierExcludes = @(
     '/Server Backup/**/token*.json'
     '/Server Backup/**/rclone.conf'
     '/Server Backup/**/portainer.db'
+    '/Server Backup/configs/portainer-backups/**'
     '/Server Backup/configs/callsheet/secrets/**'
     '/Server Backup/configs/w70b-provision/**'
     '/Server Backup/configs/claude/projects/**'
